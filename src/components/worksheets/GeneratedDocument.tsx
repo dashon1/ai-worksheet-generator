@@ -1,5 +1,7 @@
+import { useMemo, useState } from 'react';
 import { Worksheet, ExportFormat } from '../../types';
-import { Sparkles, Bot, GitBranch, Plug, Download, Edit3, CheckCircle, FileCode, Zap, FileBadge, Package } from 'lucide-react';
+import { generateAssetDocument } from '../../utils/export';
+import { Sparkles, Bot, GitBranch, Plug, Download, Edit3, CheckCircle, FileCode, Zap, FileBadge, Package, Eye, Copy, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface GeneratedDocumentProps {
 	worksheet: Worksheet;
@@ -38,9 +40,22 @@ const productTypeDescriptions = {
 export function GeneratedDocument({ worksheet, onExport, onBack }: GeneratedDocumentProps) {
 	const Icon = typeIcons[worksheet.type];
 	const typeLabel = typeLabels[worksheet.type];
+	const [copied, setCopied] = useState(false);
+	const [showPreview, setShowPreview] = useState(true);
+
+	// Generate the production document
+	const productionDocument = useMemo(() => {
+		return generateAssetDocument(worksheet);
+	}, [worksheet]);
 
 	const getFieldValue = (fieldId: string): string => {
 		return worksheet.responses[fieldId] || '';
+	};
+
+	const handleCopy = () => {
+		navigator.clipboard.writeText(productionDocument);
+		setCopied(true);
+		setTimeout(() => setCopied(false), 2000);
 	};
 
 	return (
@@ -108,43 +123,89 @@ export function GeneratedDocument({ worksheet, onExport, onBack }: GeneratedDocu
 				</div>
 			</div>
 
-			{/* PRODUCTION READY SECTION - The main attraction */}
+			{/* GENERATED ASSET PREVIEW - Shows the actual production document */}
 			<div className="bg-gradient-to-br from-emerald-500 via-teal-500 to-cyan-500 rounded-2xl p-1 shadow-xl">
-				<div className="bg-white dark:bg-slate-900 rounded-xl p-6">
-					<div className="flex items-center gap-3 mb-4">
-						<div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 rounded-xl flex items-center justify-center">
-							<Package className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
-						</div>
-						<div>
-							<h2 className="text-xl font-bold text-gray-900 dark:text-white">
-								Download Production-Ready Asset
-							</h2>
-							<p className="text-sm text-gray-600 dark:text-gray-400">
-								Your completed {typeLabel.toLowerCase()} transformed into a deployable specification
-							</p>
+				<div className="bg-white dark:bg-slate-900 rounded-xl overflow-hidden">
+					{/* Preview Header */}
+					<div className="bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-4">
+						<div className="flex items-center justify-between">
+							<div className="flex items-center gap-3">
+								<div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+									<Eye className="w-5 h-5 text-white" />
+								</div>
+								<div>
+									<h2 className="text-lg font-semibold text-white">
+										{productTypeLabels[worksheet.type]} Preview
+									</h2>
+									<p className="text-sm text-white/80">
+										Your production-ready asset (generated from your responses)
+									</p>
+								</div>
+							</div>
+							<button
+								onClick={() => setShowPreview(!showPreview)}
+								className="flex items-center gap-2 px-3 py-2 bg-white/20 hover:bg-white/30 rounded-lg transition-colors text-white text-sm"
+							>
+								{showPreview ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+								{showPreview ? 'Hide' : 'Show'} Preview
+							</button>
 						</div>
 					</div>
 
-					{/* Main Production Download Button */}
-					<button
-						onClick={() => onExport('product')}
-						className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold rounded-xl hover:from-emerald-600 hover:to-teal-700 transition-all shadow-lg shadow-emerald-500/30 text-lg"
-					>
-						<Zap className="w-6 h-6" />
-						<div className="text-left">
-							<div>Download {productTypeLabels[worksheet.type]}</div>
-							<div className="text-xs font-normal opacity-90">{productTypeDescriptions[worksheet.type]}</div>
+					{/* Preview Content */}
+					{showPreview && (
+						<div className="p-6">
+							<div className="bg-slate-900 rounded-xl overflow-hidden">
+								{/* Code header */}
+								<div className="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700">
+									<div className="flex items-center gap-2">
+										<div className="w-3 h-3 rounded-full bg-red-500"></div>
+										<div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+										<div className="w-3 h-3 rounded-full bg-green-500"></div>
+										<span className="ml-2 text-gray-400 text-sm font-mono">
+											{worksheet.title.toLowerCase().replace(/[^a-z0-9]/g, '-')}.md
+										</span>
+									</div>
+									<button
+										onClick={handleCopy}
+										className="flex items-center gap-2 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-gray-300 text-sm"
+									>
+										<Copy className="w-4 h-4" />
+										{copied ? 'Copied!' : 'Copy'}
+									</button>
+								</div>
+								{/* Code content */}
+								<div className="p-4 max-h-96 overflow-y-auto">
+									<pre className="text-gray-300 text-xs font-mono whitespace-pre-wrap leading-relaxed">
+										{productionDocument}
+									</pre>
+								</div>
+							</div>
 						</div>
-					</button>
+					)}
 
-					{/* Edit button */}
-					<button
-						onClick={onBack}
-						className="w-full mt-3 flex items-center justify-center gap-2 px-6 py-3 bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-200 dark:hover:bg-slate-600 transition-colors"
-					>
-						<Edit3 className="w-5 h-5" />
-						Edit Worksheet
-					</button>
+					{/* Download Button */}
+					<div className="px-6 pb-6">
+						<button
+							onClick={() => onExport('product')}
+							className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold rounded-xl hover:from-emerald-600 hover:to-teal-700 transition-all shadow-lg shadow-emerald-500/30 text-lg"
+						>
+							<Download className="w-6 h-6" />
+							<div className="text-left">
+								<div>Download {productTypeLabels[worksheet.type]}</div>
+								<div className="text-xs font-normal opacity-90">{productTypeDescriptions[worksheet.type]}</div>
+							</div>
+						</button>
+
+						{/* Edit button */}
+						<button
+							onClick={onBack}
+							className="w-full mt-3 flex items-center justify-center gap-2 px-6 py-3 bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-200 dark:hover:bg-slate-600 transition-colors"
+						>
+							<Edit3 className="w-5 h-5" />
+							Edit Worksheet
+						</button>
+					</div>
 				</div>
 			</div>
 
