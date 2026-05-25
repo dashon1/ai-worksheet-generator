@@ -595,6 +595,11 @@ function generateAgentIdentity(worksheet: Worksheet): string {
 		}).filter(Boolean).join('\n');
 	};
 
+	// Build SYSTEM_PROMPT_PAYLOAD from role and responsibilities
+	const systemPromptPayload = formatUserText(role) +
+		'\n\nOPERATIONAL MANDATES & EXECUTION STEP SEQUENCE:\n\n' +
+		formatUserText(responsibilities);
+
 	return `AGENT_IDENTITY:
   Identifier: "${agentId}"
   Version: "1.0.0"
@@ -607,13 +612,8 @@ ROUTING_DEPENDENCIES:
   System_Data_Bridge: "${slugify(name)}_data_bridge_mcp"
 
 
-SYSTEM_PROMPT:
-${formatUserText(role)}
-
-
-OPERATIONAL MANDATES & EXECUTION STEP SEQUENCE:
-
-${formatUserText(responsibilities)}
+SYSTEM_PROMPT_PAYLOAD:
+${systemPromptPayload}
 
 
 CAPABILITY_MAPPING:
@@ -674,7 +674,30 @@ function generateWorkflowRegistry(worksheet: Worksheet): string {
     fallback: "${ex.fallback}"`;
 	}).join('\n') : '  - exception: "GENERIC_WORKFLOW_ERROR"\n    strategy: "Retry with backoff"\n    max_attempts: 3\n    fallback: "Log error; alert operator"';
 
-	// Format routing logic from user decisions
+	// Format routing logic from user decisions - build as JSON object
+	let routingLogicJson = '';
+	if (decisions) {
+		const decisionEntries = decisions.split('\n').map(d => {
+			const clean = d.trim().replace(/^[-•*\d.]+\s*/, '');
+			const parts = clean.split(/[-→:]/);
+			if (parts.length >= 2) {
+				return `"${parts[0].trim().substring(0, 40)}": "${parts.slice(1).join('-').trim().substring(0, 60)}"`;
+			}
+			return `"${clean.substring(0, 40)}": "default_route"`;
+		}).filter(Boolean);
+
+		if (decisionEntries.length > 0) {
+			routingLogicJson = `{
+  "routing_logic": {
+    "decision_points": {
+    ${decisionEntries.join(',\n    ')}
+    }
+  }
+}`;
+		}
+	}
+
+	// Format user text sections
 	const formatUserText = (text: string): string => {
 		if (!text) return '';
 		return text.split('\n').map(line => {
@@ -697,21 +720,7 @@ SEQUENCE_PIPELINE:
 
 ${pipelineSteps}
 
-${decisions ? `
-ROUTING_LOGIC:
-{
-  "decision_points": {
-    ${decisions.split('\n').map(d => {
-      const clean = d.trim().replace(/^[-•*\d.]+\s*/, '');
-      const parts = clean.split(/[-→:]/);
-      if (parts.length >= 2) {
-        return `    "${parts[0].trim().substring(0, 40)}": "${parts.slice(1).join('-').trim().substring(0, 60)}"`;
-      }
-      return `    "${clean.substring(0, 40)}": "default_route"`;
-    }).join(',\n    ')}
-  }
-}` : ''}
-
+${routingLogicJson ? routingLogicJson + '\n' : ''}
 EXCEPTION_HANDLING:
 ${exceptionHandling}
 
@@ -747,9 +756,8 @@ function generateMCPServerRegistry(worksheet: Worksheet): string {
 	// Parse user's tools into MCP tool definitions with proper inputSchema
 	const capabilities = parseUserToolsToCapabilities(tools);
 
-	const mcpTools = capabilities.map(cap => {
-		// Try to extract parameter info from description if present
-		const hasParams = cap.description.includes(':') || cap.description.includes('-');
+	// Build proper JSON array for mcp_exposed_tools
+	const mcpToolsJson = capabilities.map(cap => {
 		return `    {
       "name": "${cap.name}",
       "description": "${cap.description}",
@@ -797,10 +805,11 @@ AUTHENTICATION_REQUIREMENTS:
 ${formatUserText(auth)}` : ''}
 
 ${capabilities.length > 0 ? `
-MCP_EXPOSED_TOOLS:
+{
   "mcp_exposed_tools": [
-${mcpTools}
-  ]` : ''}
+${mcpToolsJson}
+  ]
+}` : ''}
 
 ${usage ? `
 IMPLEMENTATION_PATTERNS:
