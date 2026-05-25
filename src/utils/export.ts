@@ -18,6 +18,153 @@ function slugify(text: string): string {
 		.replace(/^_|_$/g, '');
 }
 
+// Parse user input/output definitions into JSON Schema properties
+// Handles formats like:
+// - "topic: description"
+// - "video_length: the length of the video in seconds"
+// - "- name: The primary topic"
+function parseUserFieldsToSchema(userText: string): Record<string, { type: string; description: string }> {
+	const properties: Record<string, { type: string; description: string }> = {};
+	if (!userText || !userText.trim()) return properties;
+
+	const lines = userText.split('\n').filter(l => l.trim());
+	for (const line of lines) {
+		// Remove list markers
+		let cleanLine = line.replace(/^[-•*]\s*/, '').trim();
+
+		// Try to parse "field_name: description" or "field_name - description"
+		const colonMatch = cleanLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*[:\-–]\s*(.+)/);
+		if (colonMatch) {
+			const fieldName = colonMatch[1].trim().toLowerCase().replace(/\s+/g, '_');
+			const description = colonMatch[2].trim().replace(/"/g, "'");
+			properties[fieldName] = {
+				type: 'string',
+				description: description
+			};
+		} else if (cleanLine.length > 0) {
+			// If no colon format, use the whole line as description with generated name
+			const wordMatch = cleanLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)/);
+			if (wordMatch) {
+				const fieldName = wordMatch[1].toLowerCase();
+				properties[fieldName] = {
+					type: 'string',
+					description: cleanLine
+				};
+			}
+		}
+	}
+	return properties;
+}
+
+// Parse user tools list into proper capability mapping
+function parseUserToolsToCapabilities(toolsText: string): Array<{ name: string; version: string; description: string; purpose: string }> {
+	const capabilities = [];
+	if (!toolsText || !toolsText.trim()) {
+		return [{ name: 'general_tool', version: '1.0', description: 'General capability', purpose: 'Standard operation' }];
+	}
+
+	const lines = toolsText.split('\n').filter(l => l.trim());
+	for (const line of lines) {
+		let cleanLine = line.replace(/^[-•*]\s*/, '').trim();
+
+		// Parse tool with optional description: "tool_name - description" or "tool_name: description"
+		const parts = cleanLine.split(/[:\-–]/);
+		const toolName = parts[0].trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+		const description = parts.length > 1 ? parts.slice(1).join('-').trim() : cleanLine;
+
+		capabilities.push({
+			name: toolName,
+			version: '1.0',
+			description: description.substring(0, 150),
+			purpose: description.substring(0, 120)
+		});
+	}
+	return capabilities;
+}
+
+// Parse workflow steps into structured format
+function parseUserStepsToPipeline(stepsText: string): Array<{ stepNumber: string; name: string; execute: string; output: string }> {
+	const steps = [];
+	if (!stepsText || !stepsText.trim()) {
+		return [{ stepNumber: '01', name: 'Initialize', execute: 'Start workflow execution', output: 'workflow_ready' }];
+	}
+
+	const lines = stepsText.split('\n').filter(l => l.trim());
+	for (let i = 0; i < lines.length; i++) {
+		let cleanLine = lines[i].replace(/^[-•*]\s*/, '').trim();
+
+		// Try to parse "Step NAME: description" format
+		const stepMatch = cleanLine.match(/^(step\s*)?(\d+)?\s*[:\.\)]?\s*(.+)/i);
+		const stepName = stepMatch ? stepMatch[3].trim() : cleanLine;
+		const stepNum = String(i + 1).padStart(2, '0');
+
+		// Extract action verbs and create execute statement
+		const executeStatement = stepName.length > 80 ? stepName.substring(0, 77) + '...' : stepName;
+
+		steps.push({
+			stepNumber: stepNum,
+			name: `STEP_${stepNum}`,
+			execute: executeStatement,
+			output: `step_${stepNum}_output`
+		});
+	}
+	return steps;
+}
+
+// Parse triggers into structured format
+function parseUserTriggersToDefinitions(triggersText: string): Array<{ triggerType: string; source: string; payloadMapping: string }> {
+	const triggers = [];
+	if (!triggersText || !triggersText.trim()) {
+		return [{ triggerType: 'MANUAL', source: 'user_interface', payloadMapping: 'user_input -> workflow_payload' }];
+	}
+
+	const lines = triggersText.split('\n').filter(l => l.trim());
+	for (const line of lines) {
+		let cleanLine = line.replace(/^[-•*]\s*/, '').trim();
+
+		// Parse trigger type and source
+		if (cleanLine.includes(':')) {
+			const [type, source] = cleanLine.split(':').map(s => s.trim());
+			triggers.push({
+				triggerType: type.toUpperCase().replace(/\s+/g, '_'),
+				source: source,
+				payloadMapping: `${source.toLowerCase().replace(/\s+/g, '_')} -> workflow_input`
+			});
+		} else {
+			triggers.push({
+				triggerType: cleanLine.toUpperCase().replace(/\s+/g, '_').substring(0, 30),
+				source: cleanLine,
+				payloadMapping: 'input -> workflow_payload'
+			});
+		}
+	}
+	return triggers;
+}
+
+// Parse error handling into structured format
+function parseUserErrorsToExceptions(errorsText: string): Array<{ exception: string; strategy: string; maxAttempts: number; fallback: string }> {
+	const exceptions = [];
+	if (!errorsText || !errorsText.trim()) {
+		return [];
+	}
+
+	const lines = errorsText.split('\n').filter(l => l.trim());
+	for (const line of lines) {
+		let cleanLine = line.replace(/^[-•*]\s*/, '').trim();
+
+		// Extract error condition and suggested handling
+		if (cleanLine.length > 0) {
+			exceptions.push({
+				exception: cleanLine.substring(0, 60),
+				strategy: 'Retry with exponential backoff',
+				maxAttempts: 3,
+				fallback: `Log error; alert operator; halt workflow if unrecoverable`
+			});
+		}
+	}
+	return exceptions;
+}
+
 export function generateMarkdown(worksheet: Worksheet): string {
 	const typeLabels: Record<string, string> = {
 		skill: 'Skill',
@@ -331,102 +478,50 @@ export function generateAssetDocument(worksheet: Worksheet): string {
 
 function generateSkillRegistry(worksheet: Worksheet): string {
 	const skillId = slugify(worksheet.title);
-	const name = getFieldValue(worksheet, 'name');
+	const name = getFieldValue(worksheet, 'name') || worksheet.title;
 	const category = getFieldValue(worksheet, 'category');
-	const primaryFunction = getFieldValue(worksheet, 'primary function') || getFieldValue(worksheet, 'function');
-	const inputs = getFieldValue(worksheet, 'inputs');
-	const outputs = getFieldValue(worksheet, 'outputs');
-	const bestPractices = getFieldValue(worksheet, 'best practices');
-	const useCases = getFieldValue(worksheet, 'use cases');
-	const role = getFieldValue(worksheet, 'role');
-	const mandates = getFieldValue(worksheet, 'mandates');
-	const tools = getFieldValue(worksheet, 'tools');
+	const primaryFunction = getFieldValue(worksheet, 'primary function') || getFieldValue(worksheet, 'function') || getFieldValue(worksheet, 'what does it do');
+	const inputs = getFieldValue(worksheet, 'inputs') || getFieldValue(worksheet, 'input fields') || getFieldValue(worksheet, 'input schema');
+	const outputs = getFieldValue(worksheet, 'outputs') || getFieldValue(worksheet, 'output fields') || getFieldValue(worksheet, 'output schema');
+	const bestPractices = getFieldValue(worksheet, 'best practices') || getFieldValue(worksheet, 'guidelines');
+	const useCases = getFieldValue(worksheet, 'use cases') || getFieldValue(worksheet, 'common use cases');
 
-	// Check if this is a comprehensive skill spec
-	const hasSystemPrompt = getFieldValue(worksheet, 'system prompt') || getFieldValue(worksheet, 'operational rules');
+	// Parse user's inputs and outputs into JSON Schema properties
+	const inputProperties = parseUserFieldsToSchema(inputs);
+	const outputProperties = parseUserFieldsToSchema(outputs);
 
-	if (hasSystemPrompt || role) {
-		// Comprehensive skill with system prompt
-		return `SKILL_REGISTRY:
-  ID: "${skillId}"
-  Version: "1.0.0"
-  Classification: "${category || 'General Purpose'}"
-  Runtime_Environment: "Python 3.11 / Node.js 20 compatible"
-  Target_Execution_Tiers: "Multi-Agent Networks, Sequential Workflows, Direct API Call"
+	// Get all unique property names from user inputs for the required array
+	const requiredInputs = Object.keys(inputProperties);
 
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "${name.replace(/[^a-zA-Z0-9]/g, '')}Inputs",
-  "type": "object",
-  "properties": {
-    "core_topic": {
-      "type": "string",
-      "description": "Primary subject matter or task definition."
-    },
-    "format_constraints": {
-      "type": "object",
-      "properties": {
-        "video_length_seconds": { "type": "integer", "minimum": 15, "maximum": 900 },
-        "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"] }
-      },
-      "required": ["video_length_seconds"]
-    },
-    "audience_persona": {
-      "type": "string",
-      "description": "Target demographic dictating tone parameters."
-    },
-    "source_material": {
-      "type": "string",
-      "description": "Optional: Raw text research notes or base drafts."
-    }
-  },
-  "required": ["core_topic", "audience_persona"]
-}
+	// Build JSON Schema for inputs
+	const inputSchemaObj: Record<string, unknown> = {
+		'$schema': 'http://json-schema.org/draft-07/schema#',
+		'title': `${name.replace(/[^a-zA-Z0-9]/g, '')}Inputs`,
+		'type': 'object',
+		'properties': inputProperties,
+	};
 
-{
-  "title": "${name.replace(/[^a-zA-Z0-9]/g, '')}Outputs",
-  "type": "object",
-  "properties": {
-    "media_package": {
-      "type": "object",
-      "properties": {
-        "primary_asset_url": { "type": "string", "format": "uri" },
-        "audio_narration_url": { "type": "string", "format": "uri" }
-      }
-    },
-    "text_assets": {
-      "type": "object",
-      "properties": {
-        "timestamped_script_markdown": { "type": "string" },
-        "subtitle_file_vtt": { "type": "string" },
-        "seo_metadata_packet": {
-          "type": "object",
-          "properties": {
-            "optimized_titles": { "type": "array", "items": { "type": "string" } },
-            "description_raw": { "type": "string" },
-            "tags": { "type": "array", "items": { "type": "string" } }
-          }
-        }
-      }
-    }
-  }
-}
-
-SYSTEM_PROMPT_PAYLOAD:
-${role || primaryFunction || 'You are operating as a specialized AI skill designed to execute discrete tasks with precision and consistency.'}
-
-OPERATIONAL CODE RULES:
-${mandates || bestPractices || '1. Execute with high accuracy and attention to detail.\n2. Maintain consistent output format.\n3. Handle edge cases gracefully.'}
-
-${inputs ? `INPUT REQUIREMENTS:\n${inputs}` : ''}
-
-${outputs ? `OUTPUT SPECIFICATIONS:\n${outputs}` : ''}
-
-${useCases ? `COMMON USE CASES:\n${useCases}` : ''}
-`;
+	if (requiredInputs.length > 0) {
+		inputSchemaObj['required'] = requiredInputs;
 	}
 
-	// Standard skill format
+	// Build JSON Schema for outputs
+	const outputSchemaObj = {
+		'$schema': 'http://json-schema.org/draft-07/schema#',
+		'title': `${name.replace(/[^a-zA-Z0-9]/g, '')}Outputs`,
+		'type': 'object',
+		'properties': outputProperties
+	};
+
+	// Format sections nicely
+	const formatUserText = (text: string): string => {
+		if (!text) return 'Not specified.';
+		return text.split('\n').map(line => {
+			const clean = line.replace(/^[-•*]\s*/, '').trim();
+			return clean || line;
+		}).filter(Boolean).join('\n');
+	};
+
 	return `SKILL_REGISTRY:
   ID: "${skillId}"
   Version: "1.0.0"
@@ -434,93 +529,60 @@ ${useCases ? `COMMON USE CASES:\n${useCases}` : ''}
   Runtime_Environment: "Python 3.11 / Node.js 20 compatible"
   Target_Execution_Tiers: "Multi-Agent Networks, Sequential Workflows, Direct API Call"
 
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "${name.replace(/[^a-zA-Z0-9]/g, '')}Inputs",
-  "type": "object",
-  "properties": {
-    "input_data": {
-      "type": "string",
-      "description": "Primary input for skill execution."
-    },
-    "parameters": {
-      "type": "object",
-      "description": "Optional configuration parameters."
-    }
-  },
-  "required": ["input_data"]
-}
+${JSON.stringify(inputSchemaObj, null, 2)}
 
-{
-  "title": "${name.replace(/[^a-zA-Z0-9]/g, '')}Outputs",
-  "type": "object",
-  "properties": {
-    "result": {
-      "type": "string",
-      "description": "Primary output from skill execution."
-    },
-    "metadata": {
-      "type": "object",
-      "description": "Execution metadata and diagnostics."
-    }
-  }
-}
+${JSON.stringify(outputSchemaObj, null, 2)}
 
 PRIMARY_FUNCTION:
-${primaryFunction || 'No function defined.'}
+${formatUserText(primaryFunction)}
 
 INPUT_REQUIREMENTS:
-${inputs || 'No input requirements defined.'}
+${formatUserText(inputs)}
 
 OUTPUT_SPECIFICATIONS:
-${outputs || 'No output specifications defined.'}
+${formatUserText(outputs)}
 
 BEST_PRACTICES:
-${bestPractices || 'No best practices defined.'}
+${formatUserText(bestPractices)}
 
 COMMON_USE_CASES:
-${useCases || 'No use cases defined.'}
+${formatUserText(useCases)}
 `;
 }
 
 function generateAgentIdentity(worksheet: Worksheet): string {
 	const agentId = slugify(worksheet.title);
-	const name = getFieldValue(worksheet, 'name');
-	const role = getFieldValue(worksheet, 'role') || getFieldValue(worksheet, 'primary role') || getFieldValue(worksheet, 'system prompt');
-	const responsibilities = getFieldValue(worksheet, 'responsibilities') || getFieldValue(worksheet, 'mandates') || getFieldValue(worksheet, 'core mandates');
-	const tools = getFieldValue(worksheet, 'tools') || getFieldValue(worksheet, 'available tools');
-	const orchestration = getFieldValue(worksheet, 'orchestration') || getFieldValue(worksheet, 'skill orchestration');
-	const interactions = getFieldValue(worksheet, 'interactions') || getFieldValue(worksheet, 'interaction');
-	const metrics = getFieldValue(worksheet, 'metrics') || getFieldValue(worksheet, 'success');
+	const name = getFieldValue(worksheet, 'name') || worksheet.title;
+	const role = getFieldValue(worksheet, 'primary role') || getFieldValue(worksheet, 'role') || getFieldValue(worksheet, 'what is its role');
+	const voiceTone = getFieldValue(worksheet, 'voice') || getFieldValue(worksheet, 'tone') || 'Professional, helpful, clear';
+	const industry = getFieldValue(worksheet, 'industry') || getFieldValue(worksheet, 'target industry') || 'General Purpose';
+	const tools = getFieldValue(worksheet, 'tools') || getFieldValue(worksheet, 'available tools') || getFieldValue(worksheet, 'capabilities');
+	const responsibilities = getFieldValue(worksheet, 'responsibilities') || getFieldValue(worksheet, 'mandates') || getFieldValue(worksheet, 'core responsibilities');
+	const exampleInput = getFieldValue(worksheet, 'example 1') || getFieldValue(worksheet, 'example input');
 
-	// Check for comprehensive agent spec format
-	const hasSystemPrompt = worksheet.fields.some(f =>
-		f.question.toLowerCase().includes('primary role') ||
-		f.question.toLowerCase().includes('system prompt')
-	);
+	// Parse user's tools into capability mapping
+	const capabilities = parseUserToolsToCapabilities(tools);
 
-	if (hasSystemPrompt) {
-		// Comprehensive agent specification
-		const example1Input = getFieldValue(worksheet, 'example 1') && worksheet.fields.find(f => f.question.toLowerCase().includes('example 1') && f.question.toLowerCase().includes('user input'));
-		const example1Value = example1Input ? (worksheet.responses[example1Input.id] || '') : '';
-		const requiredOutputs = getFieldValue(worksheet, 'required outputs');
+	const capabilityMapping = capabilities.map(cap => {
+		return `  - tool: "${cap.name} (v${cap.version})"
+    purpose: "${cap.purpose}"`;
+	}).join('\n');
 
-		// Parse tools into actual capability mapping using USER'S TEXT
-		const toolLines = tools.split('\n').filter(t => t.trim());
-		const capabilityMapping = toolLines.map((line) => {
-			const cleanLine = line.replace(/^[-•*]\s*/, '').trim();
-			const toolName = cleanLine.split(/[(:]/)[0].trim();
-			return `  - tool: "${toolName}"
-    version: "1.0"
-    description: "${cleanLine.replace(/"/g, "'").substring(0, 150)}"`;
-		}).join('\n');
+	// Format user text sections
+	const formatUserText = (text: string): string => {
+		if (!text) return 'Not specified.';
+		return text.split('\n').map(line => {
+			const clean = line.replace(/^[-•*]\s*/, '').trim();
+			return clean || line;
+		}).filter(Boolean).join('\n');
+	};
 
-		return `AGENT_IDENTITY:
+	return `AGENT_IDENTITY:
   Identifier: "${agentId}"
   Version: "1.0.0"
-  Target_Role: "${name || 'AI Assistant'}"
-  Voice_Tone_Profile: "Professional, creative, highly organized, authoritative"
-  Target_Industry: "General Purpose"
+  Target_Role: "${name}"
+  Voice_Tone_Profile: "${voiceTone}"
+  Target_Industry: "${industry}"
 
 ROUTING_DEPENDENCIES:
   Primary_Downstream_Skill: "${slugify(name)}_skill"
@@ -528,109 +590,80 @@ ROUTING_DEPENDENCIES:
 
 
 SYSTEM_PROMPT:
-${role || 'You are an AI agent designed to assist with tasks efficiently and effectively.'}
+${formatUserText(role)}
+
 
 OPERATIONAL MANDATES & EXECUTION STEP SEQUENCE:
 
-${responsibilities || '1. Analyze user requests carefully.\n2. Execute tasks with precision.\n3. Provide clear, actionable responses.'}
+${formatUserText(responsibilities)}
 
-${interactions ? `
-INTERACTION PATTERNS:
-${interactions}` : ''}
 
 CAPABILITY_MAPPING:
-${capabilityMapping || '  - tool: "general_capability_tool"\n    purpose: "Standard agent capability."'}
+${capabilityMapping}
 
-${example1Value ? `
-{
+
+${exampleInput ? `{
   "agent_state": "Processing Request",
   "internal_decisions": [
-    "1. Analyzing user input parameters.",
+    "1. Analyzing user input parameters: ${exampleInput.substring(0, 80)}",
     "2. Selecting appropriate tool for execution.",
     "3. Processing and validating output."
   ],
   "downstream_invocation": {
     "target_skill": "${slugify(name)}_skill",
     "payload": {
-      "input_data": "${example1Value.substring(0, 100)}..."
+      "input_data": "${exampleInput.substring(0, 100)}"
     }
   }
 }` : ''}
-
-${requiredOutputs ? `
-OUTPUT_REQUIREMENTS:
-${requiredOutputs}` : ''}
-
-${metrics ? `
-SUCCESS_METRICS:
-${metrics}` : ''}
-`;
-	}
-
-	// Standard agent format
-	return `AGENT_IDENTITY:
-  Identifier: "${agentId}"
-  Version: "1.0.0"
-  Target_Role: "${name || 'AI Assistant'}"
-  Voice_Tone_Profile: "Professional, helpful, clear"
-  Target_Industry: "General Purpose"
-
-SYSTEM_PROMPT:
-${role || 'You are an AI agent designed to assist with tasks efficiently and effectively.'}
-
-CORE RESPONSIBILITIES:
-${responsibilities || 'No responsibilities defined.'}
-
-AVAILABLE_TOOLS:
-${tools || 'No tools specified.'}
-
-SKILL_ORCHESTRATION:
-${orchestration || 'No orchestration rules defined.'}
-
-SUCCESS_METRICS:
-${metrics || 'No metrics defined.'}
 `;
 }
 
 function generateWorkflowRegistry(worksheet: Worksheet): string {
 	const workflowId = slugify(worksheet.title);
-	const name = getFieldValue(worksheet, 'name');
-	const triggers = getFieldValue(worksheet, 'triggers');
-	const steps = getFieldValue(worksheet, 'steps') || getFieldValue(worksheet, 'sequential steps');
-	const decisions = getFieldValue(worksheet, 'decision');
-	const errors = getFieldValue(worksheet, 'error');
-	const outcomes = getFieldValue(worksheet, 'outcomes');
+	const name = getFieldValue(worksheet, 'name') || worksheet.title;
+	const triggers = getFieldValue(worksheet, 'triggers') || getFieldValue(worksheet, 'trigger events');
+	const steps = getFieldValue(worksheet, 'steps') || getFieldValue(worksheet, 'sequential steps') || getFieldValue(worksheet, 'workflow steps');
+	const decisions = getFieldValue(worksheet, 'decision') || getFieldValue(worksheet, 'routing logic');
+	const errors = getFieldValue(worksheet, 'error') || getFieldValue(worksheet, 'error handling');
+	const outcomes = getFieldValue(worksheet, 'outcomes') || getFieldValue(worksheet, 'expected outcomes');
 	const dependencies = getFieldValue(worksheet, 'dependencies');
 
-	// Parse steps using USER'S ACTUAL CONTENT
-	const stepLines = (steps || '').split('\n').filter(s => s.trim());
-	const parsedSteps = stepLines.length > 0 ? stepLines.map((line, i) => {
-		const stepNum = String(i + 1).padStart(2, '0');
-		const stepContent = line.replace(/^[-•*\d.]+\s*/, '').trim();
-		return `  STEP_${stepNum}:
-    name: "${stepContent.substring(0, 60)}"
-    description: "${stepContent.replace(/"/g, "'")}"`;
-	}).join('\n\n') : '  STEP_01:\n    name: "No steps defined"\n    description: "Add steps to your worksheet"';
+	// Parse user's content into structured format
+	const parsedTriggers = parseUserTriggersToDefinitions(triggers);
+	const parsedSteps = parseUserStepsToPipeline(steps);
+	const parsedExceptions = parseUserErrorsToExceptions(errors);
 
-	// Parse triggers using USER'S ACTUAL CONTENT
-	const triggerLines = (triggers || '').split('\n').filter(t => t.trim());
-	const parsedTriggers = triggerLines.length > 0 ? triggerLines.map((line) => {
-		const triggerContent = line.replace(/^[-•*\d.]+\s*/, '').trim();
-		const triggerType = triggerContent.includes(':') ? triggerContent.split(':')[0].trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') : 'MANUAL';
-		return `  - trigger_type: "${triggerType}"
-    source: "${triggerContent}"
-    payload_mapping: "input -> workflow"`;
-	}).join('\n') : '  - trigger_type: "MANUAL"\n    source: "User initiated"\n    payload_mapping: "input -> workflow"';
+	// Format triggers
+	const triggerDefinitions = parsedTriggers.map(t => {
+		return `  - trigger_type: "${t.triggerType}"
+    source: "${t.source}"
+    payload_mapping: "${t.payloadMapping}"`;
+	}).join('\n');
 
-	// Parse error handling using USER'S ACTUAL CONTENT
-	const errorLines = (errors || '').split('\n').filter(e => e.trim());
-	const parsedErrors = errorLines.length > 0 ? errorLines.map((line) => {
-		const errorContent = line.replace(/^[-•*\d.]+\s*/, '').trim();
-		return `  - error_condition: "${errorContent.substring(0, 80)}"
-    strategy: "Retry with backoff"
-    max_attempts: 3
-    fallback: "${errorContent}"`;
-	}).join('\n') : '  - error_condition: "No errors defined"\n    strategy: "None"\n    max_attempts: 0\n    fallback: "N/A"';
+	// Format pipeline steps
+	const pipelineSteps = parsedSteps.map(step => {
+		return `  ${step.name}:
+    Execute: ${step.execute}
+    Output: \`${step.output}\``;
+	}).join('\n\n');
+
+	// Format exception handling
+	const exceptionHandling = parsedExceptions.length > 0 ? parsedExceptions.map(ex => {
+		return `  - exception: "${ex.exception}"
+    strategy: "${ex.strategy}"
+    max_attempts: ${ex.maxAttempts}
+    fallback: "${ex.fallback}"`;
+	}).join('\n') : '  - exception: "GENERIC_WORKFLOW_ERROR"\n    strategy: "Retry with backoff"\n    max_attempts: 3\n    fallback: "Log error; alert operator"';
+
+	// Format routing logic from user decisions
+	const formatUserText = (text: string): string => {
+		if (!text) return '';
+		return text.split('\n').map(line => {
+			const clean = line.replace(/^[-•*]\s*/, '').trim();
+			return clean || line;
+		}).filter(Boolean).join('\n');
+	};
 
 	return `WORKFLOW_REGISTRY:
   ID: "${workflowId}"
@@ -640,35 +673,37 @@ function generateWorkflowRegistry(worksheet: Worksheet): string {
   Timeout_Threshold: "600s"
 
 TRIGGER_DEFINITIONS:
-${parsedTriggers}
+${triggerDefinitions}
 
 SEQUENCE_PIPELINE:
 
-${parsedSteps}
+${pipelineSteps}
 
 ${decisions ? `
 ROUTING_LOGIC:
 {
   "decision_points": {
-    ${decisions.split('\n').map((d) => {
+    ${decisions.split('\n').map(d => {
       const clean = d.trim().replace(/^[-•*\d.]+\s*/, '');
-      const parts = clean.split(/[-→]/);
-      return `    "${(parts[0] || clean).substring(0, 40)}": "${(parts[1] || clean).substring(0, 60)}"`;
+      const parts = clean.split(/[-→:]/);
+      if (parts.length >= 2) {
+        return `    "${parts[0].trim().substring(0, 40)}": "${parts.slice(1).join('-').trim().substring(0, 60)}"`;
+      }
+      return `    "${clean.substring(0, 40)}": "default_route"`;
     }).join(',\n    ')}
   }
 }` : ''}
 
-${errors ? `
 EXCEPTION_HANDLING:
-${parsedErrors}` : 'EXCEPTION_HANDLING:\n  - error_condition: "No errors defined"\n    strategy: "None"\n    max_attempts: 0\n    fallback: "N/A"'}
+${exceptionHandling}
 
 ${outcomes ? `
 EXPECTED_OUTCOMES:
-${outcomes}` : ''}
+${formatUserText(outcomes)}` : ''}
 
 ${dependencies ? `
 DEPENDENCIES:
-${dependencies}` : ''}
+${formatUserText(dependencies)}` : ''}
 
 {
   "workflow_state": "READY",
@@ -682,34 +717,43 @@ ${dependencies}` : ''}
 }
 
 function generateMCPServerRegistry(worksheet: Worksheet): string {
-	const mcpName = slugify(worksheet.title);
-	const name = getFieldValue(worksheet, 'name');
-	const purpose = getFieldValue(worksheet, 'purpose');
-	const connection = getFieldValue(worksheet, 'connection');
-	const formats = getFieldValue(worksheet, 'formats') || getFieldValue(worksheet, 'data formats');
-	const auth = getFieldValue(worksheet, 'auth');
+	const mcpId = slugify(worksheet.title);
+	const name = getFieldValue(worksheet, 'name') || worksheet.title;
+	const purpose = getFieldValue(worksheet, 'purpose') || getFieldValue(worksheet, 'what does it do');
+	const connection = getFieldValue(worksheet, 'connection') || getFieldValue(worksheet, 'how to connect');
+	const tools = getFieldValue(worksheet, 'tools') || getFieldValue(worksheet, 'exposed tools') || getFieldValue(worksheet, 'available tools');
+	const auth = getFieldValue(worksheet, 'auth') || getFieldValue(worksheet, 'authentication');
 	const usage = getFieldValue(worksheet, 'usage') || getFieldValue(worksheet, 'usage patterns');
 	const limits = getFieldValue(worksheet, 'limits') || getFieldValue(worksheet, 'rate limits');
 
-	// Parse tools from USER'S ACTUAL INPUT
-	const toolsField = worksheet.fields.find(f => f.question.toLowerCase().includes('tools') || f.question.toLowerCase().includes('exposed'));
-	let toolsSection = '';
-	if (toolsField) {
-		const toolsValue = worksheet.responses[toolsField.id] || '';
-		if (toolsValue && toolsValue.trim()) {
-			const toolLines = toolsValue.split('\n').filter(t => t.trim());
-			toolsSection = toolLines.map((line) => {
-				const cleanLine = line.replace(/^[-•*]\s*/, '').trim();
-				const toolName = cleanLine.split(/[(:]/)[0].trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-				return `  - name: "${toolName}"
-    description: "${cleanLine.replace(/"/g, "'").substring(0, 150)}"
-    inputSchema: { "type": "object", "properties": {}, "required": [] }`;
-			}).join('\n\n');
-		}
-	}
+	// Parse user's tools into MCP tool definitions with proper inputSchema
+	const capabilities = parseUserToolsToCapabilities(tools);
+
+	const mcpTools = capabilities.map(cap => {
+		// Try to extract parameter info from description if present
+		const hasParams = cap.description.includes(':') || cap.description.includes('-');
+		return `    {
+      "name": "${cap.name}",
+      "description": "${cap.description}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }`;
+	}).join(',\n');
+
+	// Format user text sections
+	const formatUserText = (text: string): string => {
+		if (!text) return '';
+		return text.split('\n').map(line => {
+			const clean = line.replace(/^[-•*]\s*/, '').trim();
+			return clean || line;
+		}).filter(Boolean).join('\n');
+	};
 
 	return `SERVER_REGISTRY:
-  Name: "${mcpName}"
+  Name: "${mcpId}"
   Version: "1.0.0"
   Protocol_Standard: "Model Context Protocol (MCP) v1.0"
   Transport_Layer: "Standard Input/Output (stdio)"
@@ -724,25 +768,25 @@ SECURITY_POLICY:
     Max_Payload_Buffer_Chunk: "10MB"
 
 ${purpose ? `PURPOSE:
-${purpose}` : ''}
+${formatUserText(purpose)}` : ''}
 
 ${connection ? `
 CONNECTION_CONFIGURATION:
-${connection}` : ''}
-
-${formats ? `
-DATA_FORMAT_SPECIFICATIONS:
-${formats}` : ''}
+${formatUserText(connection)}` : ''}
 
 ${auth ? `
 AUTHENTICATION_REQUIREMENTS:
-${auth}` : ''}
+${formatUserText(auth)}` : ''}
 
-${toolsSection ? `
+${capabilities.length > 0 ? `
 MCP_EXPOSED_TOOLS:
-${toolsSection}` : ''}
+  "mcp_exposed_tools": [
+${mcpTools}
+  ]` : ''}
+
 ${usage ? `
 IMPLEMENTATION_PATTERNS:
+
   - PRE-FLIGHT VALIDATION PATTERN:
     Downstream callers must always validate input schemas before executing tool calls.
 
@@ -753,11 +797,11 @@ IMPLEMENTATION_PATTERNS:
     Utilize standard local memory caching for schema metadata to minimize overhead.
 
 USAGE_GUIDELINES:
-${usage}` : ''}
+${formatUserText(usage)}` : ''}
 
 ${limits ? `
 RATE_LIMITS_AND_QUOTAS:
-${limits}` : ''}
+${formatUserText(limits)}` : ''}
 
 {
   "jsonrpc": "2.0",
