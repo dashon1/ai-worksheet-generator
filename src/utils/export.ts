@@ -505,11 +505,14 @@ function generateAgentIdentity(worksheet: Worksheet): string {
 		const example1Value = example1Input ? (worksheet.responses[example1Input.id] || '') : '';
 		const requiredOutputs = getFieldValue(worksheet, 'required outputs');
 
-		// Parse tools into capability mapping format
+		// Parse tools into actual capability mapping using USER'S TEXT
 		const toolLines = tools.split('\n').filter(t => t.trim());
-		const capabilityMapping = toolLines.map((line, i) => {
-			const toolName = line.replace(/^[-•*]\s*/, '').split('(')[0].trim();
-			return `  - tool: "${toolName} (v1.0)"\n    purpose: "Tool capability description."`;
+		const capabilityMapping = toolLines.map((line) => {
+			const cleanLine = line.replace(/^[-•*]\s*/, '').trim();
+			const toolName = cleanLine.split(/[(:]/)[0].trim();
+			return `  - tool: "${toolName}"
+    version: "1.0"
+    description: "${cleanLine.replace(/"/g, "'").substring(0, 150)}"`;
 		}).join('\n');
 
 		return `AGENT_IDENTITY:
@@ -599,27 +602,35 @@ function generateWorkflowRegistry(worksheet: Worksheet): string {
 	const outcomes = getFieldValue(worksheet, 'outcomes');
 	const dependencies = getFieldValue(worksheet, 'dependencies');
 
-	// Parse steps into numbered format
-	const stepLines = steps.split('\n').filter(s => s.trim());
-	const parsedSteps = stepLines.map((line, i) => {
+	// Parse steps using USER'S ACTUAL CONTENT
+	const stepLines = (steps || '').split('\n').filter(s => s.trim());
+	const parsedSteps = stepLines.length > 0 ? stepLines.map((line, i) => {
 		const stepNum = String(i + 1).padStart(2, '0');
 		const stepContent = line.replace(/^[-•*\d.]+\s*/, '').trim();
-		return `  STEP_${stepNum}: ${stepContent.toUpperCase().substring(0, 40)}\n    Execute: Detailed execution instructions for this step.\n    Output: \`step_${stepNum}_output\``;
-	}).join('\n\n');
+		return `  STEP_${stepNum}:
+    name: "${stepContent.substring(0, 60)}"
+    description: "${stepContent.replace(/"/g, "'")}"`;
+	}).join('\n\n') : '  STEP_01:\n    name: "No steps defined"\n    description: "Add steps to your worksheet"';
 
-	// Parse triggers
-	const triggerLines = triggers.split('\n').filter(t => t.trim());
-	const parsedTriggers = triggerLines.map((line, i) => {
+	// Parse triggers using USER'S ACTUAL CONTENT
+	const triggerLines = (triggers || '').split('\n').filter(t => t.trim());
+	const parsedTriggers = triggerLines.length > 0 ? triggerLines.map((line) => {
 		const triggerContent = line.replace(/^[-•*\d.]+\s*/, '').trim();
-		return `  - trigger_type: "${triggerContent.includes(':') ? triggerContent.split(':')[0].trim() : 'CUSTOM_TRIGGER'}"\n    source: "configured_source"\n    payload_mapping: "input_data -> workflow_payload"`;
-	}).join('\n');
+		const triggerType = triggerContent.includes(':') ? triggerContent.split(':')[0].trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') : 'MANUAL';
+		return `  - trigger_type: "${triggerType}"
+    source: "${triggerContent}"
+    payload_mapping: "input -> workflow"`;
+	}).join('\n') : '  - trigger_type: "MANUAL"\n    source: "User initiated"\n    payload_mapping: "input -> workflow"';
 
-	// Parse error handling
-	const errorLines = errors.split('\n').filter(e => e.trim());
-	const parsedErrors = errorLines.map((line, i) => {
+	// Parse error handling using USER'S ACTUAL CONTENT
+	const errorLines = (errors || '').split('\n').filter(e => e.trim());
+	const parsedErrors = errorLines.length > 0 ? errorLines.map((line) => {
 		const errorContent = line.replace(/^[-•*\d.]+\s*/, '').trim();
-		return `  - exception: "EXECUTION_TIMEOUT_${i + 1}"\n    strategy: "Retry pipeline segment"\n    max_attempts: 3\n    backoff_coefficient: 2.0\n    fallback: "Log fatal error state; alert operator"`;
-	}).join('\n');
+		return `  - error_condition: "${errorContent.substring(0, 80)}"
+    strategy: "Retry with backoff"
+    max_attempts: 3
+    fallback: "${errorContent}"`;
+	}).join('\n') : '  - error_condition: "No errors defined"\n    strategy: "None"\n    max_attempts: 0\n    fallback: "N/A"';
 
 	return `WORKFLOW_REGISTRY:
   ID: "${workflowId}"
@@ -629,23 +640,27 @@ function generateWorkflowRegistry(worksheet: Worksheet): string {
   Timeout_Threshold: "600s"
 
 TRIGGER_DEFINITIONS:
-${parsedTriggers || '  - trigger_type: "MANUAL_INPUT"\n    source: "chat_interface_channel"\n    payload_mapping: "user_text -> raw_input"'}
+${parsedTriggers}
 
 SEQUENCE_PIPELINE:
 
-${parsedSteps || '  STEP_01: INITIALIZE\n    Execute: Initialize workflow execution context.\n    Output: \`workflow_context\`\n\n  STEP_02: PROCESS\n    Execute: Execute core workflow logic.\n    Output: \`processed_result\`\n\n  STEP_03: FINALIZE\n    Execute: Complete workflow and generate outputs.\n    Output: \`final_output\`'}
+${parsedSteps}
 
 ${decisions ? `
 ROUTING_LOGIC:
 {
   "decision_points": {
-    ${decisions.split('\n').map((d, i) => `"condition_${i + 1}": "${d.trim()}"`).join(',\n    ')}
+    ${decisions.split('\n').map((d) => {
+      const clean = d.trim().replace(/^[-•*\d.]+\s*/, '');
+      const parts = clean.split(/[-→]/);
+      return `    "${(parts[0] || clean).substring(0, 40)}": "${(parts[1] || clean).substring(0, 60)}"`;
+    }).join(',\n    ')}
   }
 }` : ''}
 
 ${errors ? `
 EXCEPTION_HANDLING:
-${parsedErrors}` : 'EXCEPTION_HANDLING:\n  - exception: "GENERIC_EXECUTION_FAILURE"\n    strategy: "Retry with backoff"\n    max_attempts: 3\n    fallback: "Alert operator, log error"'}
+${parsedErrors}` : 'EXCEPTION_HANDLING:\n  - error_condition: "No errors defined"\n    strategy: "None"\n    max_attempts: 0\n    fallback: "N/A"'}
 
 ${outcomes ? `
 EXPECTED_OUTCOMES:
@@ -676,40 +691,21 @@ function generateMCPServerRegistry(worksheet: Worksheet): string {
 	const usage = getFieldValue(worksheet, 'usage') || getFieldValue(worksheet, 'usage patterns');
 	const limits = getFieldValue(worksheet, 'limits') || getFieldValue(worksheet, 'rate limits');
 
-	// Check for comprehensive MCP spec
-	const hasTools = worksheet.fields.some(f => f.question.toLowerCase().includes('tools') || f.question.toLowerCase().includes('exposed'));
-
+	// Parse tools from USER'S ACTUAL INPUT
+	const toolsField = worksheet.fields.find(f => f.question.toLowerCase().includes('tools') || f.question.toLowerCase().includes('exposed'));
 	let toolsSection = '';
-	if (hasTools) {
-		toolsSection = `
-MCP_EXPOSED_TOOLS:
-  - name: "read_resource"
-    description: "Reads data from configured data source endpoints."
-    inputSchema: {
-      "type": "object",
-      "properties": {
-        "resource_path": { "type": "string" }
-      },
-      "required": ["resource_path"]
-    }
-
-  - name: "write_resource"
-    description: "Writes data to configured storage destinations."
-    inputSchema: {
-      "type": "object",
-      "properties": {
-        "destination_path": { "type": "string" },
-        "content": { "type": "string" }
-      },
-      "required": ["destination_path", "content"]
-    }
-
-  - name: "list_operations"
-    description: "Lists available operations and their schemas."
-    inputSchema: {
-      "type": "object",
-      "properties": {}
-    }`;
+	if (toolsField) {
+		const toolsValue = worksheet.responses[toolsField.id] || '';
+		if (toolsValue && toolsValue.trim()) {
+			const toolLines = toolsValue.split('\n').filter(t => t.trim());
+			toolsSection = toolLines.map((line) => {
+				const cleanLine = line.replace(/^[-•*]\s*/, '').trim();
+				const toolName = cleanLine.split(/[(:]/)[0].trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+				return `  - name: "${toolName}"
+    description: "${cleanLine.replace(/"/g, "'").substring(0, 150)}"
+    inputSchema: { "type": "object", "properties": {}, "required": [] }`;
+			}).join('\n\n');
+		}
 	}
 
 	return `SERVER_REGISTRY:
@@ -742,7 +738,9 @@ ${auth ? `
 AUTHENTICATION_REQUIREMENTS:
 ${auth}` : ''}
 
-${toolsSection}
+${toolsSection ? `
+MCP_EXPOSED_TOOLS:
+${toolsSection}` : ''}
 ${usage ? `
 IMPLEMENTATION_PATTERNS:
   - PRE-FLIGHT VALIDATION PATTERN:
