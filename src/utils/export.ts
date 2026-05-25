@@ -23,9 +23,12 @@ function slugify(text: string): string {
 // - "topic: description"
 // - "video_length: the length of the video in seconds"
 // - "- name: The primary topic"
-function parseUserFieldsToSchema(userText: string): Record<string, { type: string; description: string }> {
+// Returns both properties and track of which are required/optional
+function parseUserFieldsToSchema(userText: string): { properties: Record<string, { type: string; description: string }>; required: string[] } {
 	const properties: Record<string, { type: string; description: string }> = {};
-	if (!userText || !userText.trim()) return properties;
+	const required: string[] = [];
+
+	if (!userText || !userText.trim()) return { properties, required };
 
 	const lines = userText.split('\n').filter(l => l.trim());
 	for (const line of lines) {
@@ -37,10 +40,24 @@ function parseUserFieldsToSchema(userText: string): Record<string, { type: strin
 		if (colonMatch) {
 			const fieldName = colonMatch[1].trim().toLowerCase().replace(/\s+/g, '_');
 			const description = colonMatch[2].trim().replace(/"/g, "'");
+
+			// Check if this field is explicitly marked as optional
+			const isOptional = description.toLowerCase().includes('optional') ||
+				description.toLowerCase().includes('viewer participation') ||
+				description.toLowerCase().includes('not required') ||
+				description.toLowerCase().includes('if provided') ||
+				description.toLowerCase().includes('can be blank') ||
+				description.toLowerCase().includes('may be empty');
+
 			properties[fieldName] = {
 				type: 'string',
 				description: description
 			};
+
+			// Only add to required array if NOT marked as optional
+			if (!isOptional) {
+				required.push(fieldName);
+			}
 		} else if (cleanLine.length > 0) {
 			// If no colon format, use the whole line as description with generated name
 			const wordMatch = cleanLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)/);
@@ -50,10 +67,11 @@ function parseUserFieldsToSchema(userText: string): Record<string, { type: strin
 					type: 'string',
 					description: cleanLine
 				};
+				required.push(fieldName);
 			}
 		}
 	}
-	return properties;
+	return { properties, required };
 }
 
 // Parse user tools list into proper capability mapping
@@ -487,22 +505,20 @@ function generateSkillRegistry(worksheet: Worksheet): string {
 	const useCases = getFieldValue(worksheet, 'use cases') || getFieldValue(worksheet, 'common use cases');
 
 	// Parse user's inputs and outputs into JSON Schema properties
-	const inputProperties = parseUserFieldsToSchema(inputs);
+	const inputSchema = parseUserFieldsToSchema(inputs);
 	const outputProperties = parseUserFieldsToSchema(outputs);
 
-	// Get all unique property names from user inputs for the required array
-	const requiredInputs = Object.keys(inputProperties);
-
-	// Build JSON Schema for inputs
+	// Build JSON Schema for inputs - use actual required fields from parsing
 	const inputSchemaObj: Record<string, unknown> = {
 		'$schema': 'http://json-schema.org/draft-07/schema#',
 		'title': `${name.replace(/[^a-zA-Z0-9]/g, '')}Inputs`,
 		'type': 'object',
-		'properties': inputProperties,
+		'properties': inputSchema.properties,
 	};
 
-	if (requiredInputs.length > 0) {
-		inputSchemaObj['required'] = requiredInputs;
+	// Only include required array if there are actually required fields
+	if (inputSchema.required.length > 0) {
+		inputSchemaObj['required'] = inputSchema.required;
 	}
 
 	// Build JSON Schema for outputs
@@ -510,7 +526,7 @@ function generateSkillRegistry(worksheet: Worksheet): string {
 		'$schema': 'http://json-schema.org/draft-07/schema#',
 		'title': `${name.replace(/[^a-zA-Z0-9]/g, '')}Outputs`,
 		'type': 'object',
-		'properties': outputProperties
+		'properties': outputProperties.properties
 	};
 
 	// Format sections nicely
@@ -521,6 +537,11 @@ function generateSkillRegistry(worksheet: Worksheet): string {
 			return clean || line;
 		}).filter(Boolean).join('\n');
 	};
+
+	// Build SYSTEM_PROMPT_PAYLOAD from all the rule sections
+	const systemPromptPayload = formatUserText(primaryFunction) +
+		'\n\nOPERATIONAL CODE RULES:\n' +
+		formatUserText(bestPractices);
 
 	return `SKILL_REGISTRY:
   ID: "${skillId}"
@@ -533,20 +554,17 @@ ${JSON.stringify(inputSchemaObj, null, 2)}
 
 ${JSON.stringify(outputSchemaObj, null, 2)}
 
-PRIMARY_FUNCTION:
-${formatUserText(primaryFunction)}
+SYSTEM_PROMPT_PAYLOAD:
+${systemPromptPayload}
 
-INPUT_REQUIREMENTS:
-${formatUserText(inputs)}
+${inputs ? `INPUT_REQUIREMENTS:
+${formatUserText(inputs)}` : ''}
 
-OUTPUT_SPECIFICATIONS:
-${formatUserText(outputs)}
+${outputs ? `OUTPUT_SPECIFICATIONS:
+${formatUserText(outputs)}` : ''}
 
-BEST_PRACTICES:
-${formatUserText(bestPractices)}
-
-COMMON_USE_CASES:
-${formatUserText(useCases)}
+${useCases ? `COMMON_USE_CASES:
+${formatUserText(useCases)}` : ''}
 `;
 }
 
